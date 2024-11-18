@@ -61,6 +61,11 @@ def get_policy_and_config_classes(name: str) -> tuple[Policy, object]:
         from lerobot.common.policies.act.modeling_act import ACTPolicy
 
         return ACTPolicy, ACTConfig
+    elif name == "act_pcd":
+        from lerobot.common.policies.act.configuration_act import ACTConfig
+        from lerobot.common.policies.act.modeling_act import ACTPCDPolicy
+
+        return ACTPCDPolicy, ACTConfig
     elif name == "vqbet":
         from lerobot.common.policies.vqbet.configuration_vqbet import VQBeTConfig
         from lerobot.common.policies.vqbet.modeling_vqbet import VQBeTPolicy
