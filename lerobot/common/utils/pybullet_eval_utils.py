@@ -158,8 +158,6 @@ def motion_plan_from_state_with_tto(
     num_steps = i + 1
     print(f"sim results:\nstep: {num_steps}\npos_err: {pos_err*100} cm\nori_err: {ori_err} deg")
 
-    # TODO: add video saving
-
     return output_traj, reaching_success, has_collision, t_rollout, t_tto, num_steps
 
 
