@@ -22,6 +22,7 @@ from pathlib import Path
 from pprint import pformat
 from threading import Lock
 
+import h5py
 import hydra
 import numpy as np
 import torch
@@ -49,6 +50,8 @@ from lerobot.common.utils.utils import (
     set_global_seed,
 )
 from lerobot.scripts.eval import eval_policy
+from lerobot.common.utils.pybullet_eval_utils import eval_from_states
+from neural_mp.utils.pcd_utils import compute_full_pcd
 
 
 def make_optimizer_and_scheduler(cfg, policy):
@@ -233,6 +236,37 @@ def log_eval_info(logger, info, step, cfg, dataset, is_online):
 
     logger.log_dict(info, step, mode="eval")
 
+def log_drp_eval_info(logger, info, step, cfg, dataset, is_online):
+    # A sample is an (observation,action) pair, where observation and action
+    # can be on multiple timestamps. In a batch, we have `batch_size`` number of samples.
+    num_samples = (step + 1) * cfg.training.batch_size
+    avg_samples_per_ep = dataset.num_samples / dataset.num_episodes
+    num_episodes = num_samples / avg_samples_per_ep
+    num_epochs = num_samples / dataset.num_samples
+    log_items = [
+        f"step:{format_big_number(step)}",
+        # number of samples seen during training
+        f"smpl:{format_big_number(num_samples)}",
+        # number of episodes seen during training
+        f"ep:{format_big_number(num_episodes)}",
+        # number of time all unique samples are seen
+        f"epch:{num_epochs:.2f}",
+        f"total_eval_time:{info['total_eval_time']:.3f}",
+        f"t_rollout_ave:{info['t_rollout_ave']:.3f}",
+        f"collision_rate:{info['collision_rate']:.3f}",
+        f"reaching_rate:{info['reaching_rate']:.3f}",
+        f"success_rate:{info['success_rate']:.3f}",
+        f"step_size_ave:{info['step_size_ave']:.1f}",
+    ]
+    logging.info(" ".join(log_items))
+
+    info["step"] = step
+    info["num_samples"] = num_samples
+    info["num_episodes"] = num_episodes
+    info["num_epochs"] = num_epochs
+    info["is_online"] = is_online
+
+    logger.log_dict(info, step, mode="eval")
 
 def train(cfg: DictConfig, out_dir: str | None = None, job_name: str | None = None):
     if out_dir is None:
@@ -323,7 +357,8 @@ def train(cfg: DictConfig, out_dir: str | None = None, job_name: str | None = No
     eval_env = None
     if cfg.training.eval_freq > 0:
         logging.info("make_env")
-        eval_env = make_env(cfg)
+        if cfg.env.name != 'franka_pybullet':
+            eval_env = make_env(cfg)
 
     logging.info("make_policy")
     policy = make_policy(
@@ -392,6 +427,46 @@ def train(cfg: DictConfig, out_dir: str | None = None, job_name: str | None = No
             )
             logging.info("Resume training")
 
+    def evaluate_and_checkpoint_if_needed_pybullet(step, is_online):
+        _num_digits = max(6, len(str(cfg.training.offline_steps + cfg.training.online_steps)))
+        step_identifier = f"{step:0{_num_digits}d}"
+
+        if cfg.training.eval_freq > 0 and step % cfg.training.eval_freq == 0:
+            logging.info(f"Eval policy at step {step}")
+            videos_dir = Path(out_dir) / "eval"
+            videos_dir.mkdir(parents=True, exist_ok=True)
+            video_path = videos_dir / f"eval_step_{step_identifier}.mp4"
+            with torch.no_grad(), torch.autocast(device_type=device.type) if cfg.use_amp else nullcontext():
+                eval_info = eval_from_states(
+                    policy=policy,
+                    eval_hdf5_path = cfg.eval.drp_eval_hdf5_path,
+                    num_eval_states = cfg.eval.num_eval_states,
+                    num_video_trajs = cfg.eval.num_video_trajs,
+                    video_path = video_path,
+                    video_skip = cfg.eval.video_skip,
+                    camera_name = cfg.eval.camera_name,
+                )
+            log_drp_eval_info(logger, eval_info, step, cfg, offline_dataset, is_online=is_online)
+            if cfg.wandb.enable:
+                logger.log_video(str(video_path), step, mode="eval")
+            logging.info("Resume training")
+
+        if cfg.training.save_checkpoint and (
+            step % cfg.training.save_freq == 0
+            or step == cfg.training.offline_steps + cfg.training.online_steps
+        ):
+            logging.info(f"Checkpoint policy after step {step}")
+            # Note: Save with step as the identifier, and format it to have at least 6 digits but more if
+            # needed (choose 6 as a minimum for consistency without being overkill).
+            logger.save_checkpoint(
+                step,
+                policy,
+                optimizer,
+                lr_scheduler,
+                identifier=step_identifier,
+            )
+            logging.info("Resume training")
+
     # create dataloader for offline training
     if cfg.training.get("drop_n_last_frames"):
         shuffle = False
@@ -422,6 +497,21 @@ def train(cfg: DictConfig, out_dir: str | None = None, job_name: str | None = No
 
         start_time = time.perf_counter()
         batch = next(dl_iter)
+
+        if policy.model.use_pcd:
+            with h5py.File(cfg.drp_hdf5_path, "r") as dataset:
+                full_pcd_list = []
+                for ep_idx in batch["episode_index"]:
+                    full_env_state = dataset[f"data/demo_{ep_idx}/states"][:]
+                    full_pcd = compute_full_pcd(
+                        full_env_state,
+                        num_robot_points=2048,
+                        num_obstacle_points=4096,
+                    )
+                    full_pcd_list.append(torch.from_numpy(full_pcd))
+
+            batch["observation.pcd"] = torch.cat(full_pcd_list, dim=0)
+
         dataloading_s = time.perf_counter() - start_time
 
         for key in batch:
@@ -444,7 +534,10 @@ def train(cfg: DictConfig, out_dir: str | None = None, job_name: str | None = No
 
         # Note: evaluate_and_checkpoint_if_needed happens **after** the `step`th training update has completed,
         # so we pass in step + 1.
-        evaluate_and_checkpoint_if_needed(step + 1, is_online=False)
+        if cfg.env.name == 'franka_pybullet':
+            evaluate_and_checkpoint_if_needed_pybullet(step + 1, is_online=False)
+        else:
+            evaluate_and_checkpoint_if_needed(step + 1, is_online=False)
 
         step += 1
         offline_step += 1  # noqa: SIM113

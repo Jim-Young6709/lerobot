@@ -36,6 +36,7 @@ from torchvision.ops.misc import FrozenBatchNorm2d
 
 from lerobot.common.policies.act.configuration_act import ACTConfig
 from lerobot.common.policies.normalize import Normalize, Unnormalize
+from lerobot.common.policies.pcd import MPiNetsPointNet
 
 
 class ACTPolicy(
@@ -294,6 +295,7 @@ class ACT(nn.Module):
         # The cls token forms parameters of the latent's distribution (like this [*means, *log_variances]).
         self.use_robot_state = "observation.state" in config.input_shapes
         self.use_images = any(k.startswith("observation.image") for k in config.input_shapes)
+        self.use_pcd = any(k.startswith("observation.pcd") for k in config.input_shapes)
         self.use_env_state = "observation.environment_state" in config.input_shapes
         if self.config.use_vae:
             self.vae_encoder = ACTEncoder(config, is_vae_encoder=True)
@@ -330,6 +332,10 @@ class ACT(nn.Module):
             # feature map).
             # Note: The forward method of this returns a dict: {"feature_map": output}.
             self.backbone = IntermediateLayerGetter(backbone_model, return_layers={"layer4": "feature_map"})
+        elif self.use_pcd:
+            # TODO: currently using the default setting: small + 1024 output dim, make this configurable
+            pointnet_output_dim = 1024
+            self.backbone = MPiNetsPointNet(output_dim=pointnet_output_dim)
 
         # Transformer (acts as VAE decoder when training with the variational objective).
         self.encoder = ACTEncoder(config)
@@ -350,6 +356,10 @@ class ACT(nn.Module):
             self.encoder_img_feat_input_proj = nn.Conv2d(
                 backbone_model.fc.in_features, config.dim_model, kernel_size=1
             )
+        elif self.use_pcd:
+            self.encoder_pcd_feat_input_proj = nn.Linear(
+                pointnet_output_dim, config.dim_model
+            )
         # Transformer encoder positional embeddings.
         n_1d_tokens = 1  # for the latent
         if self.use_robot_state:
@@ -359,6 +369,8 @@ class ACT(nn.Module):
         self.encoder_1d_feature_pos_embed = nn.Embedding(n_1d_tokens, config.dim_model)
         if self.use_images:
             self.encoder_cam_feat_pos_embed = ACTSinusoidalPositionEmbedding2d(config.dim_model // 2)
+        elif self.use_pcd:
+            self.encoder_pcd_feat_pos_embed = nn.Embedding(1, config.dim_model)
 
         # Transformer decoder.
         # Learnable positional embedding for the transformer's decoder (in the style of DETR object queries).
@@ -400,9 +412,9 @@ class ACT(nn.Module):
             ), "actions must be provided when using the variational objective in training mode."
 
         batch_size = (
-            batch["observation.images"]
-            if "observation.images" in batch
-            else batch["observation.environment_state"]
+            batch["action"]
+            if "action" in batch
+            else batch["observation.state"]
         ).shape[0]
 
         # Prepare the latent for input to the transformer encoder.
@@ -490,6 +502,11 @@ class ACT(nn.Module):
             encoder_in_tokens.extend(einops.rearrange(all_cam_features, "b c h w -> (h w) b c"))
             all_cam_pos_embeds = torch.cat(all_cam_pos_embeds, axis=-1)
             encoder_in_pos_embed.extend(einops.rearrange(all_cam_pos_embeds, "b c h w -> (h w) b c"))
+        elif self.use_pcd:
+            pcd_features = self.backbone(batch["observation.pcd"])
+            pcd_features = self.encoder_pcd_feat_input_proj(pcd_features)
+            encoder_in_tokens.append(pcd_features)
+            encoder_in_pos_embed.append(self.encoder_pcd_feat_pos_embed.weight)
 
         # Stack all tokens along the sequence dimension.
         encoder_in_tokens = torch.stack(encoder_in_tokens, axis=0)

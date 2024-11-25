@@ -9,16 +9,15 @@ import torch
 from robofin.robots import FrankaRobot
 from robomimic.envs.env_mp import EnvMP
 from tqdm import tqdm
-
+from lerobot.common.policies.policy_protocol import Policy
 from neural_mp.envs.franka_pybullet_env import FrankaBulletEnv
 from neural_mp.utils.pcd_utils import compute_full_pcd, compute_robot_pcd, has_object_in_hand
 
 @torch.no_grad()
 def motion_plan_from_state_with_tto(
     env: FrankaBulletEnv,
-    policy,
+    policy: Policy,
     state,
-    train_mode,
     device,
     num_robot_points=2048,
     num_obstacle_points=4096,
@@ -38,6 +37,8 @@ def motion_plan_from_state_with_tto(
     Returns:
         Tuple[list, bool, float]: output trajectory, planning success flag, and average rollout time.
     """
+
+    # prepare observations
     states = torch.from_numpy(state).to(device).unsqueeze(0).repeat(batch_size, 1)
     # in a single task, goal_angles, gripper_state, and scene_pcd_params should be the same
     assert states.dim() == 2
@@ -67,11 +68,6 @@ def motion_plan_from_state_with_tto(
     print(f"compute pcd time: {t_pcd2 - t_pcd}")
     goal_pose = FrankaRobot.fk(goal_angles[0].cpu().numpy(), eff_frame="right_gripper")
 
-    policy.start_episode()
-    if train_mode:
-        policy.policy.set_train()
-    else:
-        policy.policy.set_eval()
     q = torch.as_tensor(joint_angles, device=device).float()
     goal_angles = torch.as_tensor(goal_angles, device=device).float()
     assert q.ndim == 2
@@ -82,17 +78,24 @@ def motion_plan_from_state_with_tto(
 
     gripper_width = float(gripper_state[0].cpu().numpy())
 
-    obs = OrderedDict()
-    obs["current_angles"] = q
-    obs["goal_angles"] = goal_angles
-    obs["compute_pcd_params"] = point_cloud
+    start_goal_angles = torch.cat([q, goal_angles], dim=1)
+    obs = {
+        "observation.state": start_goal_angles,
+        "observation.pcd": point_cloud,
+    }
 
     # limit max_rollout_len up to 100, so gpu memory does not explode
     max_rollout_len = min(max_rollout_len, 300)
 
+    # init policy
+    assert isinstance(policy, torch.nn.Module), "Policy must be a PyTorch nn module."
+    policy.reset()
+
     ti0 = time.time()
     for i in range(max_rollout_len):
-        qt = qt + policy.policy.get_action(obs_dict=obs)
+        with torch.inference_mode():
+            action = policy.select_action(obs)
+        qt = qt + action
         trajectory.append(qt)
         robot_pcd = compute_robot_pcd(
             qt,
@@ -102,8 +105,8 @@ def motion_plan_from_state_with_tto(
             scene_pcd_params,
         ).type_as(point_cloud)
         point_cloud[:, : robot_pcd.shape[1], :3] = robot_pcd
-        obs["current_angles"] = qt
-        obs["compute_pcd_params"] = point_cloud
+        obs["observation.state"][:, :7] = qt
+        obs["observation.pcd"] = point_cloud
 
     ti1 = time.time()
     t_rollout = ti1 - ti0
@@ -161,7 +164,8 @@ def motion_plan_from_state_with_tto(
     return output_traj, reaching_success, has_collision, t_rollout, t_tto, num_steps
 
 
-def plan_from_states(
+def eval_from_states(
+    policy: torch.nn.Module,
     eval_hdf5_path: str,
     num_eval_states = None,
     num_video_trajs = None,
@@ -171,7 +175,9 @@ def plan_from_states(
 ):
     # TODO: load eval model
     device = torch.device("cuda:0")
-    policy = ...
+    assert isinstance(policy, Policy)
+    eval_start = time.time()
+    policy.eval()
 
     # load states from hdf5 file and create env
     states_path = eval_hdf5_path
@@ -230,7 +236,6 @@ def plan_from_states(
             env.env,
             policy,
             state,
-            train_mode=False,
             device=device,
             max_rollout_len=300,
             batch_size=1,
@@ -270,8 +275,21 @@ def plan_from_states(
     success_rate = success_rate / num_states
     step_size_ave = step_size_ave / num_states
 
+    eval_end = time.time()
+    total_eval_time = eval_end - eval_start
+
     print(
-        f"t_rollout_ave: {t_rollout_ave}\nt_tto_ave: {t_tto_ave}\ncollision_rate: {collision_rate}\nreaching_rate: {reaching_rate}\nsuccess_rate: {success_rate}"
+        f"t_rollout_ave: {t_rollout_ave}\nt_tto_ave: {t_tto_ave}\ncollision_rate: {collision_rate}\nreaching_rate: {reaching_rate}\nsuccess_rate: {success_rate}\nstep_size_ave: {step_size_ave}\ntotal_eval_time: {total_eval_time}"
     )
 
-    return t_rollout_ave, t_tto_ave, collision_rate, reaching_rate, success_rate, step_size_ave
+    eval_info = {
+        "t_rollout_ave": t_rollout_ave,
+        "t_tto_ave": t_tto_ave,
+        "collision_rate": collision_rate,
+        "reaching_rate": reaching_rate,
+        "success_rate": success_rate,
+        "step_size_ave": step_size_ave,
+        "total_eval_time": total_eval_time,
+    }
+
+    return eval_info

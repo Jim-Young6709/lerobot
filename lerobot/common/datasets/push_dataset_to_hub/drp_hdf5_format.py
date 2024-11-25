@@ -84,84 +84,42 @@ def load_from_raw(
     episodes: list[int] | None = None,
     encoding: dict | None = None,
 ):
-    # only frames from simulation are uncompressed
-    compressed_images = "sim" not in raw_dir.name
+    with h5py.File(raw_dir, "r") as dataset:
+        num_episodes = dataset['data'].attrs['total']
+        ep_dicts = []
+        ep_ids = episodes if episodes else range(num_episodes)
+        env_states_max_len = 0
+        for ep_idx in tqdm.tqdm(ep_ids):
+            ep = dataset[f'data/demo_{ep_idx}']
+            actions = torch.from_numpy(ep['actions'][:]) # (T, 7)
+            # env_states are too much info to save, just load externally
+            # env_states = torch.from_numpy(ep['states'][:]) # (1, start_angle + goal_angle + env_X)
+            # compute_pcd_params = torch.from_numpy(ep['obs/compute_pcd_params'][:]) # (1, env_X)
+            current_angles = torch.from_numpy(ep['obs/current_angles'][:]) # (T, 7)
+            goal_angles = torch.from_numpy(ep['obs/goal_angles'][:]) # (T, 7)
+            state = torch.cat([current_angles, goal_angles], dim=1) # (T, 14)
+            goal_ee = torch.from_numpy(ep['obs/goal_ee'][:]) # (T, 7)
+            gripper_state = torch.from_numpy(ep['obs/gripper_state'][:]) # (T, 1)
 
-    hdf5_files = sorted(raw_dir.glob("episode_*.hdf5"))
-    num_episodes = len(hdf5_files)
-
-    ep_dicts = []
-    ep_ids = episodes if episodes else range(num_episodes)
-    for ep_idx in tqdm.tqdm(ep_ids):
-        ep_path = hdf5_files[ep_idx]
-        with h5py.File(ep_path, "r") as ep:
-            num_frames = ep["/action"].shape[0]
-
-            # last step of demonstration is considered done
+            num_frames = actions.shape[0]
             done = torch.zeros(num_frames, dtype=torch.bool)
             done[-1] = True
 
-            state = torch.from_numpy(ep["/observations/qpos"][:])
-            action = torch.from_numpy(ep["/action"][:])
-            if "/observations/qvel" in ep:
-                velocity = torch.from_numpy(ep["/observations/qvel"][:])
-            if "/observations/effort" in ep:
-                effort = torch.from_numpy(ep["/observations/effort"][:])
-
             ep_dict = {}
-
-            for camera in get_cameras(ep):
-                img_key = f"observation.images.{camera}"
-
-                if compressed_images:
-                    import cv2
-
-                    # load one compressed image after the other in RAM and uncompress
-                    imgs_array = []
-                    for data in ep[f"/observations/images/{camera}"]:
-                        imgs_array.append(cv2.imdecode(data, 1))
-                    imgs_array = np.array(imgs_array)
-
-                else:
-                    # load all images in RAM
-                    imgs_array = ep[f"/observations/images/{camera}"][:]
-
-                if video:
-                    # save png images in temporary directory
-                    tmp_imgs_dir = videos_dir / "tmp_images"
-                    save_images_concurrently(imgs_array, tmp_imgs_dir)
-
-                    # encode images to a mp4 video
-                    fname = f"{img_key}_episode_{ep_idx:06d}.mp4"
-                    video_path = videos_dir / fname
-                    encode_video_frames(tmp_imgs_dir, video_path, fps, **(encoding or {}))
-
-                    # clean temporary images directory
-                    shutil.rmtree(tmp_imgs_dir)
-
-                    # store the reference to the video frame
-                    ep_dict[img_key] = [
-                        {"path": f"videos/{fname}", "timestamp": i / fps} for i in range(num_frames)
-                    ]
-                else:
-                    ep_dict[img_key] = [PILImage.fromarray(x) for x in imgs_array]
-
+            ep_dict["action"] = actions
             ep_dict["observation.state"] = state
-            if "/observations/velocity" in ep:
-                ep_dict["observation.velocity"] = velocity
-            if "/observations/effort" in ep:
-                ep_dict["observation.effort"] = effort
-            ep_dict["action"] = action
+            ep_dict["observation.goal_ee"] = goal_ee
+            ep_dict["observation.gripper_state"] = gripper_state
+
             ep_dict["episode_index"] = torch.tensor([ep_idx] * num_frames)
             ep_dict["frame_index"] = torch.arange(0, num_frames, 1)
-            ep_dict["timestamp"] = torch.arange(0, num_frames, 1) / fps
+            ep_dict["timestamp"] = torch.arange(0, num_frames, 1) / fps # need to check if this timestamp is realistic, current default of fps (50) might be too large
             ep_dict["next.done"] = done
-            # TODO(rcadene): add reward and success by computing them in sim
 
             assert isinstance(ep_idx, int)
             ep_dicts.append(ep_dict)
 
-        gc.collect()
+    gc.collect() # garbage collector to free up memory
 
     data_dict = concatenate_episodes(ep_dicts)
 
@@ -172,25 +130,15 @@ def load_from_raw(
 
 def to_hf_dataset(data_dict, video) -> Dataset:
     features = {}
-
-    keys = [key for key in data_dict if "observation.images." in key]
-    for key in keys:
-        if video:
-            features[key] = VideoFrame()
-        else:
-            features[key] = Image()
-
     features["observation.state"] = Sequence(
         length=data_dict["observation.state"].shape[1], feature=Value(dtype="float32", id=None)
     )
-    if "observation.velocity" in data_dict:
-        features["observation.velocity"] = Sequence(
-            length=data_dict["observation.velocity"].shape[1], feature=Value(dtype="float32", id=None)
-        )
-    if "observation.effort" in data_dict:
-        features["observation.effort"] = Sequence(
-            length=data_dict["observation.effort"].shape[1], feature=Value(dtype="float32", id=None)
-        )
+    features["observation.goal_ee"] = Sequence(
+        length=data_dict["observation.goal_ee"].shape[1], feature=Value(dtype="float32", id=None)
+    )
+    features["observation.gripper_state"] = Sequence(
+        length=data_dict["observation.gripper_state"].shape[1], feature=Value(dtype="float32", id=None)
+    )
     features["action"] = Sequence(
         length=data_dict["action"].shape[1], feature=Value(dtype="float32", id=None)
     )
@@ -213,8 +161,8 @@ def from_raw_to_lerobot_format(
     episodes: list[int] | None = None,
     encoding: dict | None = None,
 ):
-    # sanity check
-    check_format(raw_dir)
+    # sanity check, skip for now, but might be better to add a check for robomimic data format
+    # check_format(raw_dir)
 
     if fps is None:
         fps = 50
