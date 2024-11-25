@@ -74,6 +74,8 @@ def get_from_raw_to_lerobot_format_fn(raw_format: str):
         from lerobot.common.datasets.push_dataset_to_hub.xarm_pkl_format import from_raw_to_lerobot_format
     elif raw_format == "cam_png":
         from lerobot.common.datasets.push_dataset_to_hub.cam_png_format import from_raw_to_lerobot_format
+    elif raw_format == "drp_hdf5":
+        from lerobot.common.datasets.push_dataset_to_hub.drp_hdf5_format import from_raw_to_lerobot_format
     else:
         raise ValueError(
             f"The selected {raw_format} can't be found. Did you add it to `lerobot/scripts/push_dataset_to_hub.py::get_from_raw_to_lerobot_format_fn`?"
@@ -286,7 +288,7 @@ def main():
         "--raw-format",
         type=str,
         required=True,
-        help="Dataset type (e.g. `pusht_zarr`, `umi_zarr`, `aloha_hdf5`, `xarm_pkl`, `dora_parquet`, `openx_rlds`).",
+        help="Dataset type (e.g. `pusht_zarr`, `umi_zarr`, `aloha_hdf5`, `xarm_pkl`, `dora_parquet`, `openx_rlds`, `drp_hdf5`).",
     )
     parser.add_argument(
         "--repo-id",
