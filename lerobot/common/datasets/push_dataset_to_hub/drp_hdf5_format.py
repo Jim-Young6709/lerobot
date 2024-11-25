@@ -85,7 +85,7 @@ def load_from_raw(
     encoding: dict | None = None,
 ):
     with h5py.File(raw_dir, "r") as dataset:
-        num_episodes = dataset['data'].attrs['total']
+        num_episodes = len(dataset['data'])
         ep_dicts = []
         ep_ids = episodes if episodes else range(num_episodes)
         env_states_max_len = 0
