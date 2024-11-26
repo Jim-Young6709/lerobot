@@ -98,8 +98,8 @@ def load_from_raw(
             current_angles = torch.from_numpy(ep['obs/current_angles'][:]) # (T, 7)
             goal_angles = torch.from_numpy(ep['obs/goal_angles'][:]) # (T, 7)
             state = torch.cat([current_angles, goal_angles], dim=1) # (T, 14)
-            goal_ee = torch.from_numpy(ep['obs/goal_ee'][:]) # (T, 7)
-            gripper_state = torch.from_numpy(ep['obs/gripper_state'][:]) # (T, 1)
+            # goal_ee = torch.from_numpy(ep['obs/goal_ee'][:]) # (T, 7)
+            # gripper_state = torch.from_numpy(ep['obs/gripper_state'][:]) # (T, 1)
 
             num_frames = actions.shape[0]
             done = torch.zeros(num_frames, dtype=torch.bool)
@@ -108,8 +108,8 @@ def load_from_raw(
             ep_dict = {}
             ep_dict["action"] = actions
             ep_dict["observation.state"] = state
-            ep_dict["observation.goal_ee"] = goal_ee
-            ep_dict["observation.gripper_state"] = gripper_state
+            # ep_dict["observation.goal_ee"] = goal_ee
+            # ep_dict["observation.gripper_state"] = gripper_state
 
             ep_dict["episode_index"] = torch.tensor([ep_idx] * num_frames)
             ep_dict["frame_index"] = torch.arange(0, num_frames, 1)
@@ -133,12 +133,12 @@ def to_hf_dataset(data_dict, video) -> Dataset:
     features["observation.state"] = Sequence(
         length=data_dict["observation.state"].shape[1], feature=Value(dtype="float32", id=None)
     )
-    features["observation.goal_ee"] = Sequence(
-        length=data_dict["observation.goal_ee"].shape[1], feature=Value(dtype="float32", id=None)
-    )
-    features["observation.gripper_state"] = Sequence(
-        length=data_dict["observation.gripper_state"].shape[1], feature=Value(dtype="float32", id=None)
-    )
+    # features["observation.goal_ee"] = Sequence(
+    #     length=data_dict["observation.goal_ee"].shape[1], feature=Value(dtype="float32", id=None)
+    # )
+    # features["observation.gripper_state"] = Sequence(
+    #     length=data_dict["observation.gripper_state"].shape[1], feature=Value(dtype="float32", id=None)
+    # )
     features["action"] = Sequence(
         length=data_dict["action"].shape[1], feature=Value(dtype="float32", id=None)
     )
@@ -148,7 +148,7 @@ def to_hf_dataset(data_dict, video) -> Dataset:
     features["next.done"] = Value(dtype="bool", id=None)
     features["index"] = Value(dtype="int64", id=None)
 
-    hf_dataset = Dataset.from_dict(data_dict, features=Features(features))
+    hf_dataset = Dataset.from_dict(data_dict, features=None)#Features(features))
     hf_dataset.set_transform(hf_transform_to_torch)
     return hf_dataset
 
