@@ -218,6 +218,7 @@ class Unnormalize(nn.Module):
                 num_joint_configs = batch[key].shape[-1] // 7
                 batch_dim = batch[key].shape
                 reconfigured = batch[key].reshape(*batch_dim[:-1], num_joint_configs, 7)
+                reconfigured = torch.clamp(reconfigured, min=-1, max=1)
                 batch[key] = unnormalize_franka_joints(reconfigured).reshape(*batch_dim[:-1], num_joint_configs * 7)
                 continue
 

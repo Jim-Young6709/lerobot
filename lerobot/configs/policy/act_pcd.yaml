@@ -12,8 +12,8 @@ dataset_repo_id: jimyoung6709/drp_1.3M
 training:
   offline_steps: 1000000000 # 1B
   online_steps: 0
-  eval_freq: 100000 # 1M
-  save_freq: 100000 # 1M
+  eval_freq: 100000 # 100k
+  save_freq: 100000 # 100k
   save_checkpoint: true
 
   batch_size: 8
@@ -27,9 +27,9 @@ training:
     action: "[i / ${fps} for i in range(${policy.chunk_size})]"
 
 eval:
-  n_episodes: 50
+  n_episodes: 50 # not used atm
   drp_eval_hdf5_path: null
-  num_eval_states: 100
+  num_eval_states: 300
   num_video_trajs: 10
   video_path: null
   video_skip: 1

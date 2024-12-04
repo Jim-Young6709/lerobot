@@ -21,8 +21,7 @@ def motion_plan_from_state_with_tto(
     device,
     num_robot_points=2048,
     num_obstacle_points=4096,
-    max_rollout_len=100,
-    batch_size=1,
+    max_rollout_len=300,
 ):
     """
     Motion plan by rolling out the policy with batched samples and perform test time optimization
@@ -38,8 +37,9 @@ def motion_plan_from_state_with_tto(
         Tuple[list, bool, float]: output trajectory, planning success flag, and average rollout time.
     """
 
+    assert max_rollout_len <= 300, "max_rollout_len should be less than 300, otherwise rollout will take too long"
     # prepare observations
-    states = torch.from_numpy(state).to(device).unsqueeze(0).repeat(batch_size, 1)
+    states = torch.from_numpy(state).to(device).unsqueeze(0)
     # in a single task, goal_angles, gripper_state, and scene_pcd_params should be the same
     assert states.dim() == 2
     joint_angles, goal_angles, gripper_state, scene_pcd_params = (
@@ -84,9 +84,6 @@ def motion_plan_from_state_with_tto(
         "observation.pcd": point_cloud,
     }
 
-    # limit max_rollout_len up to 100, so gpu memory does not explode
-    max_rollout_len = min(max_rollout_len, 300)
-
     # init policy
     assert isinstance(policy, torch.nn.Module), "Policy must be a PyTorch nn module."
     policy.reset()
@@ -97,6 +94,21 @@ def motion_plan_from_state_with_tto(
             action = policy.select_action(obs)
         qt = qt + action
         trajectory.append(qt)
+
+        # check whether goal has reached
+        eff_pose = FrankaRobot.fk(qt.detach().cpu().numpy()[0], eff_frame="right_gripper")
+        pos_err = np.linalg.norm(eff_pose._xyz - goal_pose._xyz)
+        ori_err = np.abs(np.degrees((eff_pose.so3._quat * goal_pose.so3._quat.conjugate).radians))
+
+        num_steps = i + 1
+        if (
+            np.linalg.norm(eff_pose._xyz - goal_pose._xyz) < 0.01
+            and np.abs(np.degrees((eff_pose.so3._quat * goal_pose.so3._quat.conjugate).radians))
+            < 15
+        ):
+            reaching_success = True
+            break
+
         robot_pcd = compute_robot_pcd(
             qt,
             gripper_width,
@@ -115,15 +127,7 @@ def motion_plan_from_state_with_tto(
 
     output_traj = torch.stack(trajectory).permute(
         1, 0, 2
-    )  # [batch_size, max_rollout_len, 7], this doesn't contain start config
-
-    goal_reaching = torch.norm(output_traj[:, -1] - goal_angles, dim=1) < 0.1
-    reached_traj = output_traj[goal_reaching]
-    num_valid_traj = reached_traj.shape[0]
-    if num_valid_traj == 0:
-        print("None of the traj reached the goal")
-    else:
-        output_traj = reached_traj
+    )  # [batch_size, rollout_len, 7], this doesn't contain start config
 
     traj_num = output_traj.shape[0]
     check_collision = torch.zeros(traj_num, max_rollout_len)
@@ -143,22 +147,6 @@ def motion_plan_from_state_with_tto(
     ti2 = time.time()
     t_tto = ti2 - ti1
     print(f"collision checking time: {t_tto}")
-
-    # check whether goal is reached
-    for i in range(len(output_traj)):
-        eff_pose = FrankaRobot.fk(output_traj[i], eff_frame="right_gripper")
-        pos_err = np.linalg.norm(eff_pose._xyz - goal_pose._xyz)
-        ori_err = np.abs(np.degrees((eff_pose.so3._quat * goal_pose.so3._quat.conjugate).radians))
-
-        if (
-            np.linalg.norm(eff_pose._xyz - goal_pose._xyz) < 0.01
-            and np.abs(np.degrees((eff_pose.so3._quat * goal_pose.so3._quat.conjugate).radians))
-            < 15
-        ):
-            reaching_success = True
-            output_traj = output_traj[: (i + 1)]
-            break
-    num_steps = i + 1
     print(f"sim results:\nstep: {num_steps}\npos_err: {pos_err*100} cm\nori_err: {ori_err} deg")
 
     return output_traj, reaching_success, has_collision, t_rollout, t_tto, num_steps
@@ -237,8 +225,6 @@ def eval_from_states(
             policy,
             state,
             device=device,
-            max_rollout_len=300,
-            batch_size=1,
         )
         t2 = time.time()
         t_load_data += t1 - t0
