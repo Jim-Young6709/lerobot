@@ -114,6 +114,7 @@ class ACTConfig:
             "action": "mean_std",
         }
     )
+    use_stats: bool = True
 
     # Architecture.
     # Vision backbone.

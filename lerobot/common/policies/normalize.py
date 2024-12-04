@@ -15,6 +15,7 @@
 # limitations under the License.
 import torch
 from torch import Tensor, nn
+from neural_mp.utils.franka_utils import normalize_franka_joints, unnormalize_franka_joints
 
 
 def create_stats_buffers(
@@ -102,6 +103,7 @@ class Normalize(nn.Module):
         shapes: dict[str, list[int]],
         modes: dict[str, str],
         stats: dict[str, dict[str, Tensor]] | None = None,
+        use_stats: bool = True,
     ):
         """
         Args:
@@ -124,16 +126,25 @@ class Normalize(nn.Module):
         super().__init__()
         self.shapes = shapes
         self.modes = modes
-        self.stats = stats
-        stats_buffers = create_stats_buffers(shapes, modes, stats)
-        for key, buffer in stats_buffers.items():
-            setattr(self, "buffer_" + key.replace(".", "_"), buffer)
+        if use_stats:
+            self.stats = stats
+            stats_buffers = create_stats_buffers(shapes, modes, stats)
+            for key, buffer in stats_buffers.items():
+                setattr(self, "buffer_" + key.replace(".", "_"), buffer)
 
     # TODO(rcadene): should we remove torch.no_grad?
     @torch.no_grad
     def forward(self, batch: dict[str, Tensor]) -> dict[str, Tensor]:
         batch = dict(batch)  # shallow copy avoids mutating the input batch
         for key, mode in self.modes.items():
+            if mode == "franka_joint_limits":
+                assert batch[key].shape[-1] % 7 == 0, "The last dimension of the input tensor must be a multiple of 7"
+                num_joint_configs = batch[key].shape[-1] // 7
+                batch_dim = batch[key].shape
+                reconfigured = batch[key].reshape(*batch_dim[:-1], num_joint_configs, 7)
+                batch[key] = normalize_franka_joints(reconfigured).reshape(*batch_dim[:-1], num_joint_configs * 7)
+                continue
+
             buffer = getattr(self, "buffer_" + key.replace(".", "_"))
 
             if mode == "mean_std":
@@ -167,6 +178,7 @@ class Unnormalize(nn.Module):
         shapes: dict[str, list[int]],
         modes: dict[str, str],
         stats: dict[str, dict[str, Tensor]] | None = None,
+        use_stats: bool = True,
     ):
         """
         Args:
@@ -189,17 +201,26 @@ class Unnormalize(nn.Module):
         super().__init__()
         self.shapes = shapes
         self.modes = modes
-        self.stats = stats
-        # `self.buffer_observation_state["mean"]` contains `torch.tensor(state_dim)`
-        stats_buffers = create_stats_buffers(shapes, modes, stats)
-        for key, buffer in stats_buffers.items():
-            setattr(self, "buffer_" + key.replace(".", "_"), buffer)
+        if use_stats:
+            self.stats = stats
+            # `self.buffer_observation_state["mean"]` contains `torch.tensor(state_dim)`
+            stats_buffers = create_stats_buffers(shapes, modes, stats)
+            for key, buffer in stats_buffers.items():
+                setattr(self, "buffer_" + key.replace(".", "_"), buffer)
 
     # TODO(rcadene): should we remove torch.no_grad?
     @torch.no_grad
     def forward(self, batch: dict[str, Tensor]) -> dict[str, Tensor]:
         batch = dict(batch)  # shallow copy avoids mutating the input batch
         for key, mode in self.modes.items():
+            if mode == "franka_joint_limits":
+                assert batch[key].shape[-1] % 7 == 0, "The last dimension of the input tensor must be a multiple of 7"
+                num_joint_configs = batch[key].shape[-1] // 7
+                batch_dim = batch[key].shape
+                reconfigured = batch[key].reshape(*batch_dim[:-1], num_joint_configs, 7)
+                batch[key] = unnormalize_franka_joints(reconfigured).reshape(*batch_dim[:-1], num_joint_configs * 7)
+                continue
+
             buffer = getattr(self, "buffer_" + key.replace(".", "_"))
 
             if mode == "mean_std":

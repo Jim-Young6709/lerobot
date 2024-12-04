@@ -228,7 +228,19 @@ def push_dataset_to_hub(
         info=info,
         videos_dir=videos_dir,
     )
-    stats = compute_stats(lerobot_dataset, batch_size, num_workers)
+    if raw_format == "drp_hdf5":
+        # dummy implementation
+        # in DRP we normalize across franka joint limits
+        stats = {}
+        for key in lerobot_dataset.features:
+            stats[key] = {
+                "mean": torch.zeros(1),
+                "std": torch.zeros(1),
+                "max": torch.zeros(1),
+                "min": torch.zeros(1),
+            }
+    else:
+        stats = compute_stats(lerobot_dataset, batch_size, num_workers)
 
     if local_dir:
         hf_dataset = hf_dataset.with_format(None)  # to remove transforms that cant be saved

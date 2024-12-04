@@ -71,13 +71,13 @@ class ACTPolicy(
         self.config: ACTConfig = config
 
         self.normalize_inputs = Normalize(
-            config.input_shapes, config.input_normalization_modes, dataset_stats
+            config.input_shapes, config.input_normalization_modes, dataset_stats, use_stats=config.use_stats
         )
         self.normalize_targets = Normalize(
-            config.output_shapes, config.output_normalization_modes, dataset_stats
+            config.output_shapes, config.output_normalization_modes, dataset_stats, use_stats=config.use_stats
         )
         self.unnormalize_outputs = Unnormalize(
-            config.output_shapes, config.output_normalization_modes, dataset_stats
+            config.output_shapes, config.output_normalization_modes, dataset_stats, use_stats=config.use_stats
         )
 
         self.model = ACT(config)
