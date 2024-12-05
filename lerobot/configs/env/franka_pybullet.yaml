@@ -1,0 +1,14 @@
+# @package _global_
+
+fps: 50
+
+env:
+  name: franka_pybullet
+  task: drp
+  state_dim: 14 # current_angles (7) + goal_angles (7)
+  action_dim: 7
+  fps: ${fps}
+  episode_length: 400 # ???
+  gym:
+    obs_type: pixels_agent_pos # ???
+    render_mode: rgb_array # ???
