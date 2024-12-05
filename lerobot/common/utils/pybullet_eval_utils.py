@@ -65,7 +65,7 @@ def motion_plan_from_state_with_tto(
         )
     ).to(device)
     t_pcd2 = time.time()
-    print(f"compute pcd time: {t_pcd2 - t_pcd}")
+    # print(f"compute pcd time: {t_pcd2 - t_pcd}")
     goal_pose = FrankaRobot.fk(goal_angles[0].cpu().numpy(), eff_frame="right_gripper")
 
     q = torch.as_tensor(joint_angles, device=device).float()
@@ -122,7 +122,7 @@ def motion_plan_from_state_with_tto(
 
     ti1 = time.time()
     t_rollout = ti1 - ti0
-    print(f"policy rollout time: {t_rollout}")
+    # print(f"policy rollout time: {t_rollout}")
     ti1 = time.time()
 
     output_traj = torch.stack(trajectory).permute(
@@ -146,10 +146,10 @@ def motion_plan_from_state_with_tto(
 
     ti2 = time.time()
     t_tto = ti2 - ti1
-    print(f"collision checking time: {t_tto}")
-    print(f"sim results:\nstep: {num_steps}\npos_err: {pos_err*100} cm\nori_err: {ori_err} deg")
+    # print(f"collision checking time: {t_tto}")
+    # print(f"sim results:\nstep: {num_steps}\npos_err: {pos_err*100} cm\nori_err: {ori_err} deg")
 
-    return output_traj, reaching_success, has_collision, t_rollout, t_tto, num_steps
+    return output_traj, reaching_success, has_collision, pos_err, ori_err, t_rollout, t_tto, num_steps
 
 
 def eval_from_states(
@@ -193,6 +193,8 @@ def eval_from_states(
     collision_rate = 0
     reaching_rate = 0
     success_rate = 0
+    pos_err_ave = 0
+    ori_err_ave = 0
     step_size_ave = 0
 
     record_video = num_video_trajs is not None
@@ -217,6 +219,8 @@ def eval_from_states(
             output_traj,
             reaching_success,
             has_collision,
+            pos_err,
+            ori_err,
             t_rollout,
             t_tto,
             num_steps,
@@ -235,6 +239,8 @@ def eval_from_states(
         collision_rate += has_collision
         reaching_rate += reaching_success
         success_rate += reaching_success and not has_collision
+        pos_err_ave += pos_err
+        ori_err_ave += ori_err
         step_size_ave += num_steps
 
         if record_video and video_traj_count < num_video_trajs:
@@ -259,13 +265,16 @@ def eval_from_states(
     collision_rate = collision_rate / num_states
     reaching_rate = reaching_rate / num_states
     success_rate = success_rate / num_states
+    pos_err_ave = pos_err_ave / num_states
+    ori_err_ave = ori_err_ave / num_states
     step_size_ave = step_size_ave / num_states
 
     eval_end = time.time()
     total_eval_time = eval_end - eval_start
 
     print(
-        f"t_rollout_ave: {t_rollout_ave}\nt_tto_ave: {t_tto_ave}\ncollision_rate: {collision_rate}\nreaching_rate: {reaching_rate}\nsuccess_rate: {success_rate}\nstep_size_ave: {step_size_ave}\ntotal_eval_time: {total_eval_time}"
+        f"t_rollout_ave: {t_rollout_ave}\nt_tto_ave: {t_tto_ave}\ncollision_rate: {collision_rate}\nreaching_rate: {reaching_rate}\
+        \nsuccess_rate: {success_rate}\npos_err_ave (cm): {pos_err_ave*100}\nori_err_ave (deg): {ori_err_ave}\nstep_size_ave: {step_size_ave}\ntotal_eval_time: {total_eval_time}"
     )
 
     eval_info = {
@@ -274,6 +283,8 @@ def eval_from_states(
         "collision_rate": collision_rate,
         "reaching_rate": reaching_rate,
         "success_rate": success_rate,
+        "pos_err_ave (cm)": pos_err_ave*100,
+        "ori_err_ave (deg)": ori_err_ave,
         "step_size_ave": step_size_ave,
         "total_eval_time": total_eval_time,
     }
