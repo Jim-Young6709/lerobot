@@ -130,9 +130,10 @@ def motion_plan_from_state_with_tto(
     )  # [batch_size, rollout_len, 7], this doesn't contain start config
 
     traj_num = output_traj.shape[0]
-    check_collision = torch.zeros(traj_num, max_rollout_len)
+    rollout_len = output_traj.shape[1]
+    check_collision = torch.zeros(traj_num, rollout_len)
     for i in range(traj_num):
-        for j in range(max_rollout_len):
+        for j in range(rollout_len):
             joint_angles = output_traj[i, j].cpu().numpy()
             env.set_robot_joint_state(joint_angles)
             check_collision[i, j] = env.check_robot_collision()
