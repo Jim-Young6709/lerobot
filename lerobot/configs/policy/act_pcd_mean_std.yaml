@@ -54,10 +54,10 @@ policy:
 
   # Normalization / Unnormalization
   input_normalization_modes:
-    observation.state: franka_joint_limits
+    observation.state: mean_std
   output_normalization_modes:
-    action: franka_joint_limits_delta
-  use_stats: false
+    action: mean_std
+  use_stats: true
 
   # Architecture.
   # Vision backbone.

@@ -504,6 +504,7 @@ def train(cfg: DictConfig, out_dir: str | None = None, job_name: str | None = No
     offline_step = 0
     for _ in range(step, cfg.training.offline_steps):
         if offline_step == 0:
+            dataloading_s_sum = 0
             logging.info("Start offline training on a fixed dataset")
 
         start_time = time.perf_counter()
@@ -524,10 +525,12 @@ def train(cfg: DictConfig, out_dir: str | None = None, job_name: str | None = No
             use_amp=cfg.use_amp,
         )
 
-        train_info["dataloading_s"] = dataloading_s
+        dataloading_s_sum += dataloading_s
 
         if step % cfg.training.log_freq == 0:
+            train_info["dataloading_s"] = dataloading_s_sum / cfg.training.log_freq
             log_train_info(logger, train_info, step, cfg, offline_dataset, is_online=False)
+            dataloading_s_sum = 0
 
         # Note: evaluate_and_checkpoint_if_needed happens **after** the `step`th training update has completed,
         # so we pass in step + 1.
