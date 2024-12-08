@@ -55,13 +55,13 @@ policy:
   input_normalization_modes:
     observation.state: franka_joint_limits
   output_normalization_modes:
-    action: franka_joint_limits
+    action: franka_joint_limits_delta
   use_stats: false
 
   # Architecture.
   # Vision backbone.
-  vision_backbone: resnet18
-  pretrained_backbone_weights: ResNet18_Weights.IMAGENET1K_V1
+  vision_backbone: pcd
+  pretrained_backbone_weights: null
   replace_final_stride_with_dilation: false
   # Transformer layers.
   pre_norm: false

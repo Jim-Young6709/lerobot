@@ -15,7 +15,7 @@
 # limitations under the License.
 import torch
 from torch import Tensor, nn
-from neural_mp.utils.franka_utils import normalize_franka_joints, unnormalize_franka_joints
+from neural_mp.utils.franka_utils import normalize_franka_joints, unnormalize_franka_joints, normalize_franka_joints_delta, unnormalize_franka_joints_delta
 
 
 def create_stats_buffers(
@@ -144,6 +144,10 @@ class Normalize(nn.Module):
                 reconfigured = batch[key].reshape(*batch_dim[:-1], num_joint_configs, 7)
                 batch[key] = normalize_franka_joints(reconfigured).reshape(*batch_dim[:-1], num_joint_configs * 7)
                 continue
+            elif mode == "franka_joint_limits_delta":
+                assert batch[key].shape[-1] == 7, "The last dimension of the input tensor must be 7"
+                batch[key] = normalize_franka_joints_delta(batch[key])
+                continue
 
             buffer = getattr(self, "buffer_" + key.replace(".", "_"))
 
@@ -220,6 +224,10 @@ class Unnormalize(nn.Module):
                 reconfigured = batch[key].reshape(*batch_dim[:-1], num_joint_configs, 7)
                 reconfigured = torch.clamp(reconfigured, min=-1, max=1)
                 batch[key] = unnormalize_franka_joints(reconfigured).reshape(*batch_dim[:-1], num_joint_configs * 7)
+                continue
+            elif mode == "franka_joint_limits_delta":
+                assert batch[key].shape[-1] == 7, "The last dimension of the input tensor must be 7"
+                batch[key] = unnormalize_franka_joints_delta(batch[key])
                 continue
 
             buffer = getattr(self, "buffer_" + key.replace(".", "_"))
