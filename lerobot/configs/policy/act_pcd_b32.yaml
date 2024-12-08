@@ -12,8 +12,8 @@ dataset_repo_id: jimyoung6709/drp_1.3M
 training:
   offline_steps: 1000000000 # 1B
   online_steps: 0
-  eval_freq: 100000 # 100k
-  save_freq: 100000 # 100k
+  eval_freq: 250000 # 250k
+  save_freq: 250000 # 250k
   save_checkpoint: true
 
   batch_size: 32
