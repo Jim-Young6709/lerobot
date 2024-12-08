@@ -22,7 +22,6 @@ from pathlib import Path
 from pprint import pformat
 from threading import Lock
 
-import h5py
 import hydra
 import numpy as np
 import torch
@@ -51,7 +50,6 @@ from lerobot.common.utils.utils import (
 )
 from lerobot.scripts.eval import eval_policy
 from lerobot.common.utils.pybullet_eval_utils import eval_from_states
-from neural_mp.utils.pcd_utils import compute_full_pcd
 
 
 def make_optimizer_and_scheduler(cfg, policy):
@@ -247,6 +245,7 @@ def log_eval_info(logger, info, step, cfg, dataset, is_online):
 
     logger.log_dict(info, step, mode="eval")
 
+
 def log_drp_eval_info(logger, info, step, cfg, dataset, is_online):
     # A sample is an (observation,action) pair, where observation and action
     # can be on multiple timestamps. In a batch, we have `batch_size`` number of samples.
@@ -278,6 +277,7 @@ def log_drp_eval_info(logger, info, step, cfg, dataset, is_online):
     info["is_online"] = is_online
 
     logger.log_dict(info, step, mode="eval")
+
 
 def train(cfg: DictConfig, out_dir: str | None = None, job_name: str | None = None):
     if out_dir is None:
@@ -508,20 +508,6 @@ def train(cfg: DictConfig, out_dir: str | None = None, job_name: str | None = No
 
         start_time = time.perf_counter()
         batch = next(dl_iter)
-
-        if policy.model.use_pcd:
-            with h5py.File(cfg.drp_hdf5_path, "r") as dataset:
-                full_pcd_list = []
-                for ep_idx in batch["episode_index"]:
-                    full_env_state = dataset[f"data/demo_{ep_idx}/states"][:]
-                    full_pcd = compute_full_pcd(
-                        full_env_state,
-                        num_robot_points=2048,
-                        num_obstacle_points=4096,
-                    )
-                    full_pcd_list.append(torch.from_numpy(full_pcd))
-
-            batch["observation.pcd"] = torch.cat(full_pcd_list, dim=0)
 
         dataloading_s = time.perf_counter() - start_time
 
