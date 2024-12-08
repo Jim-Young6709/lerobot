@@ -142,7 +142,7 @@ def motion_plan_from_state_with_tto(
     best_traj_idx = torch.argmin(traj_c_num)
     has_collision = traj_c_num[best_traj_idx].cpu().numpy() > 0
     output_traj = (
-        output_traj.reshape(traj_num, max_rollout_len, -1)[best_traj_idx].detach().cpu().numpy()
+        output_traj.reshape(traj_num, rollout_len, -1)[best_traj_idx].detach().cpu().numpy()
     )
 
     ti2 = time.time()
