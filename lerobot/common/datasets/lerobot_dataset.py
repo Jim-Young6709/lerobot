@@ -15,8 +15,11 @@
 # limitations under the License.
 import logging
 import os
+import h5py
+from tqdm import tqdm
 from pathlib import Path
 from typing import Callable
+from multiprocessing import Pool
 
 import datasets
 import torch
@@ -34,15 +37,57 @@ from lerobot.common.datasets.utils import (
     reset_episode_index,
 )
 from lerobot.common.datasets.video_utils import VideoFrame, load_from_videos
+from neural_mp.utils.pcd_utils import compute_full_pcd
 
 # For maintainers, see lerobot/common/datasets/push_dataset_to_hub/CODEBASE_VERSION.md
 CODEBASE_VERSION = "v1.6"
 DATA_DIR = Path(os.environ["DATA_DIR"]) if "DATA_DIR" in os.environ else None
 
 
+def load_env_states_in_memory_list(args):
+    """
+    Worker function for processing HDF5 group members.
+    Args:
+        args (tuple): (file_name, group_name, keys)
+    Returns:
+        list: Processed data for the given keys.
+    """
+    file_name, keys, process_id = args
+    results = []
+
+    with h5py.File(file_name, 'r') as dataset:
+        for key in tqdm(keys, desc="Processing keys"):
+            state = dataset[f"data/demo_{key}/states"][:]
+            results.append(state)
+    return process_id, results
+
+
+def load_env_states_in_memory_list_para(hdf5_path, batch_size):
+    with h5py.File(hdf5_path, "r") as dataset:
+        num_data = len(dataset['data'])
+
+    subprocess_args = [
+        (hdf5_path, range(i, min(i + batch_size, num_data)), idx)
+        for idx, i in enumerate(range(0, num_data, batch_size))
+    ]
+
+    num_processes = os.cpu_count() - 1
+    with Pool(processes=num_processes) as pool:
+        results = pool.map(load_env_states_in_memory_list, subprocess_args)
+
+    process_count = 0
+    full_env_state_list = []
+    for process_id, sublist in results:
+        assert process_count == process_id, "process ordering got messed up"
+        full_env_state_list.extend(sublist)
+        process_count += 1
+    return full_env_state_list
+
+
 class LeRobotDataset(torch.utils.data.Dataset):
     def __init__(
         self,
+        cfg,
         repo_id: str,
         root: Path | None = DATA_DIR,
         split: str = "train",
@@ -67,6 +112,9 @@ class LeRobotDataset(torch.utils.data.Dataset):
             self.hf_dataset = reset_episode_index(self.hf_dataset)
         self.stats = load_stats(repo_id, CODEBASE_VERSION, root)
         self.info = load_info(repo_id, CODEBASE_VERSION, root)
+        if cfg.policy.vision_backbone == "pcd":
+            self.info["pcd"] = True
+        self.preloaded_full_env_states = load_env_states_in_memory_list_para(cfg.drp_hdf5_path, 10000)
         if self.video:
             self.videos_dir = load_videos(repo_id, CODEBASE_VERSION, root)
             self.video_backend = video_backend if video_backend is not None else "pyav"
@@ -82,6 +130,11 @@ class LeRobotDataset(torch.utils.data.Dataset):
         Returns False if it only loads images from png files.
         """
         return self.info.get("video", False)
+
+    @property
+    def pcd(self) -> bool:
+        """Returns True if this dataset loads point cloud data."""
+        return self.info.get("pcd", False)
 
     @property
     def features(self) -> datasets.Features:
@@ -157,6 +210,14 @@ class LeRobotDataset(torch.utils.data.Dataset):
             for cam in self.camera_keys:
                 item[cam] = self.image_transforms(item[cam])
 
+        if self.pcd:
+            full_env_state = self.preloaded_full_env_states[item["episode_index"]]
+            full_pcd = compute_full_pcd(
+                full_env_state,
+                num_robot_points=2048,
+                num_obstacle_points=4096,
+            )[0] # first dim is batch_size (= 1), here we don't need this dim
+            item["observation.pcd"] = torch.from_numpy(full_pcd)
         return item
 
     def __repr__(self):

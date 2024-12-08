@@ -92,6 +92,7 @@ def make_dataset(cfg, split: str = "train") -> LeRobotDataset | MultiLeRobotData
 
     if isinstance(cfg.dataset_repo_id, str):
         dataset = LeRobotDataset(
+            cfg,
             cfg.dataset_repo_id,
             split=split,
             delta_timestamps=cfg.training.get("delta_timestamps"),
