@@ -56,23 +56,34 @@ from neural_mp.utils.pcd_utils import compute_full_pcd
 
 def make_optimizer_and_scheduler(cfg, policy):
     if cfg.policy.name == "act":
-        optimizer_params_dicts = [
-            {
-                "params": [
-                    p
-                    for n, p in policy.named_parameters()
-                    if not n.startswith("model.backbone") and p.requires_grad
-                ]
-            },
-            {
-                "params": [
-                    p
-                    for n, p in policy.named_parameters()
-                    if n.startswith("model.backbone") and p.requires_grad
-                ],
-                "lr": cfg.training.lr_backbone,
-            },
-        ]
+        if cfg.policy.vision_backbone == "pcd":
+            optimizer_params_dicts = [
+                {
+                    "params": [
+                        p
+                        for n, p in policy.named_parameters()
+                        if p.requires_grad
+                    ]
+                },
+            ]
+        else:
+            optimizer_params_dicts = [
+                {
+                    "params": [
+                        p
+                        for n, p in policy.named_parameters()
+                        if not n.startswith("model.backbone") and p.requires_grad
+                    ]
+                },
+                {
+                    "params": [
+                        p
+                        for n, p in policy.named_parameters()
+                        if n.startswith("model.backbone") and p.requires_grad
+                    ],
+                    "lr": cfg.training.lr_backbone,
+                },
+            ]
         optimizer = torch.optim.AdamW(
             optimizer_params_dicts, lr=cfg.training.lr, weight_decay=cfg.training.weight_decay
         )

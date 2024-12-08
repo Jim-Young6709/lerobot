@@ -147,9 +147,9 @@ class ACTConfig:
 
     def __post_init__(self):
         """Input validation (not exhaustive)."""
-        if not self.vision_backbone.startswith("resnet"):
+        if not (self.vision_backbone.startswith("resnet") or self.vision_backbone.startswith("pcd")):
             raise ValueError(
-                f"`vision_backbone` must be one of the ResNet variants. Got {self.vision_backbone}."
+                f"`vision_backbone` must be one of the ResNet or pcd variants. Got {self.vision_backbone}."
             )
         if self.temporal_ensemble_coeff is not None and self.n_action_steps > 1:
             raise NotImplementedError(
