@@ -88,3 +88,5 @@ policy:
   kl_weight: 10.0
 
 drp_hdf5_path: null
+load_datasets_in_memory: false
+preload_action_data: true
