@@ -20,6 +20,7 @@ from functools import cache
 from pathlib import Path
 from typing import Dict
 
+import time
 import datasets
 import torch
 from datasets import load_dataset, load_from_disk
@@ -116,10 +117,10 @@ def get_hf_dataset_safe_version(repo_id: str, version: str) -> str:
         return version
 
 
-def load_hf_dataset(repo_id: str, version: str, root: Path, split: str) -> datasets.Dataset:
+def load_hf_dataset(repo_id: str, version: str, root: Path, split: str, keep_in_memory: bool=None) -> datasets.Dataset:
     """hf_dataset contains all the observations, states, actions, rewards, etc."""
     if root is not None:
-        hf_dataset = load_from_disk(str(Path(root) / repo_id / "train"))
+        hf_dataset = load_from_disk(str(Path(root) / repo_id / "train"), keep_in_memory=keep_in_memory)
         # TODO(rcadene): clean this which enables getting a subset of dataset
         if split != "train":
             if "%" in split:
@@ -138,7 +139,7 @@ def load_hf_dataset(repo_id: str, version: str, root: Path, split: str) -> datas
                 )
     else:
         safe_version = get_hf_dataset_safe_version(repo_id, version)
-        hf_dataset = load_dataset(repo_id, revision=safe_version, split=split)
+        hf_dataset = load_dataset(repo_id, revision=safe_version, split=split, keep_in_memory=keep_in_memory)
 
     hf_dataset.set_transform(hf_transform_to_torch)
     return hf_dataset
@@ -305,7 +306,102 @@ def load_previous_and_future_frames(
             item[key] = torch.stack(item[key])
 
         item[f"{key}_is_pad"] = is_pad
+    return item
 
+
+def load_previous_and_future_frames_from_preload(
+    item: dict[str, torch.Tensor],
+    preloaded_actions: datasets.Dataset,
+    episode_data_index: dict[str, torch.Tensor],
+    delta_timestamps: dict[str, list[float]],
+    tolerance_s: float,
+) -> dict[torch.Tensor]:
+    """
+    Given a current item in the dataset containing a timestamp (e.g. 0.6 seconds), and a list of time differences of
+    some modalities (e.g. delta_timestamps={"observation.image": [-0.8, -0.2, 0, 0.2]}), this function computes for each
+    given modality (e.g. "observation.image") a list of query timestamps (e.g. [-0.2, 0.4, 0.6, 0.8]) and loads the closest
+    frames in the dataset.
+
+    Importantly, when no frame can be found around a query timestamp within a specified tolerance window, this function
+    raises an AssertionError. When a timestamp is queried before the first available timestamp of the episode or after
+    the last available timestamp, the violation of the tolerance doesnt raise an AssertionError, and the function
+    populates a boolean array indicating which frames are outside of the episode range. For instance, this boolean array
+    is useful during batched training to not supervise actions associated to timestamps coming after the end of the
+    episode, or to pad the observations in a specific way. Note that by default the observation frames before the start
+    of the episode are the same as the first frame of the episode.
+
+    Parameters:
+    - item (dict): A dictionary containing all the data related to a frame. It is the result of `dataset[idx]`. Each key
+      corresponds to a different modality (e.g., "timestamp", "observation.image", "action").
+    - hf_dataset (datasets.Dataset): A dictionary containing the full dataset. Each key corresponds to a different
+      modality (e.g., "timestamp", "observation.image", "action").
+    - episode_data_index (dict): A dictionary containing two keys ("from" and "to") associated to dataset indices.
+      They indicate the start index and end index of each episode in the dataset.
+    - delta_timestamps (dict): A dictionary containing lists of delta timestamps for each possible modality to be
+      retrieved. These deltas are added to the item timestamp to form the query timestamps.
+    - tolerance_s (float, optional): The tolerance level (in seconds) used to determine if a data point is close enough to the query
+      timestamp by asserting `tol > difference`. It is suggested to set `tol` to a smaller value than the
+      smallest expected inter-frame period, but large enough to account for jitter.
+
+    Returns:
+    - The same item with the queried frames for each modality specified in delta_timestamps, with an additional key for
+      each modality (e.g. "observation.image_is_pad").
+
+    Raises:
+    - AssertionError: If any of the frames unexpectedly violate the tolerance level. This could indicate synchronization
+      issues with timestamps during data collection.
+    """
+    # get indices of the frames associated to the episode, and their timestamps
+    t0 = time.time()
+    ep_id = item["episode_index"].item()
+    ep_data_id_from = episode_data_index["from"][ep_id].item()
+    ep_data_id_to = episode_data_index["to"][ep_id].item()
+    ep_data_ids = torch.arange(ep_data_id_from, ep_data_id_to, 1)
+
+    t1 = time.time()
+    # load timestamps
+    ep_timestamps = torch.arange(0, ep_data_id_to-ep_data_id_from, 1) * delta_timestamps['action'][1] # fps is 50Hz by default
+    t2 = time.time()
+
+    # we make the assumption that the timestamps are sorted
+    ep_first_ts = ep_timestamps[0]
+    ep_last_ts = ep_timestamps[-1]
+    current_ts = item["timestamp"].item()
+    t3 = time.time()
+    for key in delta_timestamps:
+        # get timestamps used as query to retrieve data of previous/future frames
+        delta_ts = delta_timestamps[key]
+        query_ts = current_ts + torch.tensor(delta_ts)
+
+        # compute distances between each query timestamp and all timestamps of all the frames belonging to the episode
+        dist = torch.cdist(query_ts[:, None], ep_timestamps[:, None], p=1)
+        min_, argmin_ = dist.min(1)
+
+        # TODO(rcadene): synchronize timestamps + interpolation if needed
+
+        is_pad = min_ > tolerance_s
+
+        # check violated query timestamps are all outside the episode range
+        assert ((query_ts[is_pad] < ep_first_ts) | (ep_last_ts < query_ts[is_pad])).all(), (
+            f"One or several timestamps unexpectedly violate the tolerance ({min_} > {tolerance_s=}) inside episode range."
+            "This might be due to synchronization issues with timestamps during data collection."
+        )
+
+        # get dataset indices corresponding to frames to be loaded
+        data_ids = ep_data_ids[argmin_]
+        t4 = time.time()
+        # load frames modality
+        item[key] = preloaded_actions[data_ids][key]
+        t5 = time.time()
+        if isinstance(item[key][0], dict) and "path" in item[key][0]:
+            # video mode where frame are expressed as dict of path and timestamp
+            item[key] = item[key]
+        else:
+            item[key] = torch.stack(item[key])
+
+        item[f"{key}_is_pad"] = is_pad
+        t6 = time.time()
+    # print(f"t1: {t1-t0}, t2: {t2-t1}, t3: {t3-t2}, t4: {t4-t3}, t5: {t5-t4}, t6: {t6-t5}")
     return item
 
 

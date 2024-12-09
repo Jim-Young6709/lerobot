@@ -32,6 +32,7 @@ from lerobot.common.datasets.utils import (
     load_hf_dataset,
     load_info,
     load_previous_and_future_frames,
+    load_previous_and_future_frames_from_preload,
     load_stats,
     load_videos,
     reset_episode_index,
@@ -96,6 +97,7 @@ class LeRobotDataset(torch.utils.data.Dataset):
         video_backend: str | None = None,
     ):
         super().__init__()
+        self.cfg = cfg
         self.repo_id = repo_id
         self.root = root
         self.split = split
@@ -104,7 +106,7 @@ class LeRobotDataset(torch.utils.data.Dataset):
         # load data from hub or locally when root is provided
         # TODO(rcadene, aliberts): implement faster transfer
         # https://huggingface.co/docs/huggingface_hub/en/guides/download#faster-downloads
-        self.hf_dataset = load_hf_dataset(repo_id, CODEBASE_VERSION, root, split)
+        self.hf_dataset = load_hf_dataset(repo_id, CODEBASE_VERSION, root, split, cfg.get("load_datasets_in_memory", None))
         if split == "train":
             self.episode_data_index = load_episode_data_index(repo_id, CODEBASE_VERSION, root)
         else:
@@ -115,6 +117,8 @@ class LeRobotDataset(torch.utils.data.Dataset):
         if cfg.policy.vision_backbone == "pcd":
             self.info["pcd"] = True
         self.preloaded_full_env_states = load_env_states_in_memory_list_para(cfg.drp_hdf5_path, 10000)
+        if cfg.preload_action_data:
+            self.preload_actions = self.hf_dataset.select_columns('action')
         if self.video:
             self.videos_dir = load_videos(repo_id, CODEBASE_VERSION, root)
             self.video_backend = video_backend if video_backend is not None else "pyav"
@@ -189,14 +193,22 @@ class LeRobotDataset(torch.utils.data.Dataset):
         item = self.hf_dataset[idx]
 
         if self.delta_timestamps is not None:
-            item = load_previous_and_future_frames(
-                item,
-                self.hf_dataset,
-                self.episode_data_index,
-                self.delta_timestamps,
-                self.tolerance_s,
-            )
-
+            if self.cfg.preload_action_data:
+                item = load_previous_and_future_frames_from_preload(
+                    item,
+                    self.preload_actions,
+                    self.episode_data_index,
+                    self.delta_timestamps,
+                    self.tolerance_s,
+                )
+            else:
+                item = load_previous_and_future_frames(
+                    item,
+                    self.hf_dataset,
+                    self.episode_data_index,
+                    self.delta_timestamps,
+                    self.tolerance_s,
+                )
         if self.video:
             item = load_from_videos(
                 item,
