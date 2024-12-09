@@ -22,6 +22,8 @@ from pathlib import Path
 from pprint import pformat
 from threading import Lock
 
+import os
+import psutil
 import hydra
 import numpy as np
 import torch
@@ -179,6 +181,7 @@ def log_train_info(logger: Logger, info, step, cfg, dataset, is_online):
     lr = info["lr"]
     update_s = info["update_s"]
     dataloading_s = info["dataloading_s"]
+    ram_usage = info.get("RAM_usage_MB", None)
 
     # A sample is an (observation,action) pair, where observation and action
     # can be on multiple timestamps. In a batch, we have `batch_size`` number of samples.
@@ -200,6 +203,7 @@ def log_train_info(logger: Logger, info, step, cfg, dataset, is_online):
         # in seconds
         f"updt_s:{update_s:.3f}",
         f"data_s:{dataloading_s:.3f}",  # if not ~0, you are bottlenecked by cpu or io
+        f"RAM_usage_MB:{ram_usage}MB",
     ]
     logging.info(" ".join(log_items))
 
@@ -208,6 +212,7 @@ def log_train_info(logger: Logger, info, step, cfg, dataset, is_online):
     info["num_episodes"] = num_episodes
     info["num_epochs"] = num_epochs
     info["is_online"] = is_online
+    info["RAM_usage_MB"] = ram_usage
 
     logger.log_dict(info, step, mode="train")
 
@@ -528,6 +533,9 @@ def train(cfg: DictConfig, out_dir: str | None = None, job_name: str | None = No
         dataloading_s_sum += dataloading_s
 
         if step % cfg.training.log_freq == 0:
+            process = psutil.Process(os.getpid())
+            mem_usage = int(process.memory_info().rss / 1000000)
+            train_info["RAM_usage_MB"] = mem_usage
             train_info["dataloading_s"] = dataloading_s_sum / cfg.training.log_freq
             log_train_info(logger, train_info, step, cfg, offline_dataset, is_online=False)
             dataloading_s_sum = 0
