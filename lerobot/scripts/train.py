@@ -456,6 +456,7 @@ def train(cfg: DictConfig, out_dir: str | None = None, job_name: str | None = No
                 eval_info = eval_from_states(
                     policy=policy,
                     eval_hdf5_path = cfg.eval.drp_eval_hdf5_path,
+                    is_delta = not cfg.get("use_absolute_actions", False),
                     num_eval_states = cfg.eval.num_eval_states,
                     num_video_trajs = cfg.eval.num_video_trajs,
                     video_path = video_path,

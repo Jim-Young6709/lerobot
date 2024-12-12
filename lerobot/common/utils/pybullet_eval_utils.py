@@ -19,6 +19,7 @@ def motion_plan_from_state_with_tto(
     policy: Policy,
     state,
     device,
+    is_delta=True,
     num_robot_points=2048,
     num_obstacle_points=4096,
     max_rollout_len=300,
@@ -92,7 +93,10 @@ def motion_plan_from_state_with_tto(
     for i in range(max_rollout_len):
         with torch.inference_mode():
             action = policy.select_action(obs)
-        qt = qt + action
+        if is_delta:
+            qt = qt + action
+        else:
+            qt = action
         trajectory.append(qt)
 
         # check whether goal has reached
@@ -156,6 +160,7 @@ def motion_plan_from_state_with_tto(
 def eval_from_states(
     policy: torch.nn.Module,
     eval_hdf5_path: str,
+    is_delta: bool = True,
     num_eval_states = None,
     num_video_trajs = None,
     video_path = None,
@@ -230,6 +235,7 @@ def eval_from_states(
             policy,
             state,
             device=device,
+            is_delta=is_delta,
         )
         t2 = time.time()
         t_load_data += t1 - t0
