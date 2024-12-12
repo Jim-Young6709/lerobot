@@ -360,7 +360,7 @@ def load_previous_and_future_frames_from_preload(
 
     t1 = time.time()
     # load timestamps
-    ep_timestamps = torch.arange(0, ep_data_id_to-ep_data_id_from, 1) * delta_timestamps['action'][1] # fps is 50Hz by default
+    ep_timestamps = torch.arange(0, ep_data_id_to-ep_data_id_from, 1) * 0.02 # fps is 50Hz by default
     t2 = time.time()
 
     # we make the assumption that the timestamps are sorted

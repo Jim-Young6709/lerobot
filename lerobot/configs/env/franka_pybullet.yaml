@@ -8,7 +8,7 @@ env:
   state_dim: 14 # current_angles (7) + goal_angles (7)
   action_dim: 7
   fps: ${fps}
-  episode_length: 400 # ???
+  episode_length: 100 # ???
   gym:
     obs_type: pixels_agent_pos # ???
     render_mode: rgb_array # ???
