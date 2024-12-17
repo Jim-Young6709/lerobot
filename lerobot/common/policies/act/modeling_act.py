@@ -37,6 +37,7 @@ from torchvision.ops.misc import FrozenBatchNorm2d
 from lerobot.common.policies.act.configuration_act import ACTConfig
 from lerobot.common.policies.normalize import Normalize, Unnormalize
 from lerobot.common.policies.pcd import MPiNetsPointNet
+from lerobot.PT3.model import PointTransformerV3
 
 
 class ACTPolicy(
@@ -302,10 +303,6 @@ class ACT(nn.Module):
             self.vae_encoder_cls_embed = nn.Embedding(1, config.dim_model)
             # Projection layer for joint-space configuration to hidden dimension.
             if self.use_robot_state:
-                # self.vae_encoder_robot_state_input_proj = nn.Linear(
-                #     config.input_shapes["observation.state"][0], config.dim_model
-                # )
-                # TODO: Done
                 self.vae_encoder_robot_current_state_input_proj = nn.Linear(
                     int(config.input_shapes["observation.state"][0] / 2), config.dim_model
                 )
@@ -323,8 +320,6 @@ class ACT(nn.Module):
             # dimension.
             num_input_token_encoder = 1 + config.chunk_size
             if self.use_robot_state:
-                # num_input_token_encoder += 1
-                # TODO: Done
                 num_input_token_encoder += 2
             self.register_buffer(
                 "vae_encoder_pos_enc",
@@ -344,8 +339,9 @@ class ACT(nn.Module):
             self.backbone = IntermediateLayerGetter(backbone_model, return_layers={"layer4": "feature_map"})
         elif self.use_pcd:
             # TODO: currently using the default setting: small + 1024 output dim, make this configurable
-            pointnet_output_dim = 1024
-            self.backbone = MPiNetsPointNet(output_dim=pointnet_output_dim)
+            # pointnet_output_dim = 1024
+            # self.backbone = MPiNetsPointNet(output_dim=pointnet_output_dim)
+            self.backbone = PointTransformerV3(in_channels=4)
 
         # Transformer (acts as VAE decoder when training with the variational objective).
         self.encoder = ACTEncoder(config)
@@ -354,17 +350,12 @@ class ACT(nn.Module):
         # Transformer encoder input projections. The tokens will be structured like
         # [latent, (robot_state), (env_state), (image_feature_map_pixels)].
         if self.use_robot_state:
-            # self.encoder_robot_state_input_proj = nn.Linear(
-            #     config.input_shapes["observation.state"][0], config.dim_model
-            # )
-            # TODO: Done
             self.encoder_robot_current_state_input_proj = nn.Linear(
                 int(config.input_shapes["observation.state"][0] / 2), config.dim_model
             )
             self.encoder_robot_goal_state_input_proj = nn.Linear(
                 int(config.input_shapes["observation.state"][0] / 2), config.dim_model
             )
-
         if self.use_env_state:
             self.encoder_env_state_input_proj = nn.Linear(
                 config.input_shapes["observation.environment_state"][0], config.dim_model
@@ -375,14 +366,17 @@ class ACT(nn.Module):
                 backbone_model.fc.in_features, config.dim_model, kernel_size=1
             )
         elif self.use_pcd:
-            self.encoder_pcd_feat_input_proj = nn.Linear(
-                pointnet_output_dim, config.dim_model
+            num_points = 8192
+            num_pcd_tokens = 256
+            pcd_output_dim = 64
+            kernel_size = int(num_points / num_pcd_tokens)
+            self.encoder_pcd_feat_pool = nn.AvgPool1d(kernel_size=kernel_size, stride=kernel_size)
+            self.encoder_pcd_input_proj = nn.Linear(
+                pcd_output_dim, config.dim_model
             )
         # Transformer encoder positional embeddings.
         n_1d_tokens = 1  # for the latent
         if self.use_robot_state:
-            # n_1d_tokens += 1
-            # TODO: Done
             n_1d_tokens += 2
         if self.use_env_state:
             n_1d_tokens += 1
@@ -390,7 +384,7 @@ class ACT(nn.Module):
         if self.use_images:
             self.encoder_cam_feat_pos_embed = ACTSinusoidalPositionEmbedding2d(config.dim_model // 2)
         elif self.use_pcd:
-            self.encoder_pcd_feat_pos_embed = nn.Embedding(1, config.dim_model)
+            self.encoder_pcd_feat_pos_embed = nn.Embedding(num_pcd_tokens, config.dim_model)
 
         # Transformer decoder.
         # Learnable positional embedding for the transformer's decoder (in the style of DETR object queries).
@@ -444,9 +438,6 @@ class ACT(nn.Module):
                 self.vae_encoder_cls_embed.weight, "1 d -> b 1 d", b=batch_size
             )  # (B, 1, D)
             if self.use_robot_state:
-                # robot_state_embed = self.vae_encoder_robot_state_input_proj(batch["observation.state"])
-                # robot_state_embed = robot_state_embed.unsqueeze(1)  # (B, 1, D)
-                # TODO: Done
                 robot_current_state_embed = self.vae_encoder_robot_current_state_input_proj(batch["observation.state"][:, :7])
                 robot_current_state_embed = robot_current_state_embed.unsqueeze(1)  # (B, 1, D)
                 robot_goal_state_embed = self.vae_encoder_robot_goal_state_input_proj(batch["observation.state"][:, 7:])
@@ -454,8 +445,6 @@ class ACT(nn.Module):
             action_embed = self.vae_encoder_action_input_proj(batch["action"])  # (B, S, D)
 
             if self.use_robot_state:
-                # vae_encoder_input = [cls_embed, robot_state_embed, action_embed]  # (B, S+2, D)
-                # TODO: Done
                 vae_encoder_input = [cls_embed, robot_current_state_embed, robot_goal_state_embed, action_embed] # (B, S+3, D)
             else:
                 vae_encoder_input = [cls_embed, action_embed]
@@ -468,7 +457,6 @@ class ACT(nn.Module):
             # Prepare key padding mask for the transformer encoder. We have 1 or 2 extra tokens at the start of the
             # sequence depending whether we use the input states or not (cls and robot state)
             # False means not a padding token.
-            # TODO: I guess it should be 3 here? but not sure, check this
             cls_joint_is_pad = torch.full(
                 (batch_size, 3 if self.use_robot_state else 1),
                 False,
@@ -534,10 +522,34 @@ class ACT(nn.Module):
             all_cam_pos_embeds = torch.cat(all_cam_pos_embeds, axis=-1)
             encoder_in_pos_embed.extend(einops.rearrange(all_cam_pos_embeds, "b c h w -> (h w) b c"))
         elif self.use_pcd:
-            pcd_features = self.backbone(batch["observation.pcd"])
-            pcd_features = self.encoder_pcd_feat_input_proj(pcd_features)
-            encoder_in_tokens.append(pcd_features)
-            encoder_in_pos_embed.append(self.encoder_pcd_feat_pos_embed.weight)
+            # prepare inputs for vision backbone
+            pcd_obs = batch["observation.pcd"] # [B, num_points, 4]
+            pcd_obs_flat = pcd_obs.view(-1, 4)
+            PT3_coord = pcd_obs_flat[:, :3]  # [B * N, 3]: x, y, z
+            PT3_mask = pcd_obs_flat[:, 3:]   # [B * N, 1]: segmentation mask
+            PT3_feat = torch.cat([PT3_coord, PT3_mask], dim=1)  # [B * N, 4]: xyz + mask
+            B = pcd_obs.size(0)
+            N = pcd_obs.size(1)
+            PT3_batch = torch.repeat_interleave(torch.arange(B), N).to(PT3_coord.device)  # [B * N]
+            PT3_grid_size = 0.02 # default to 0.02 for indoor scenes according to the original implementation
+
+            data_dict = {
+                "coord": PT3_coord,   # Coordinates: [B * N, 3]
+                "feat": PT3_feat,     # Features: [B * N, 4] (xyz + mask)
+                "batch": PT3_batch,   # Batch indices: [B * N]
+                "grid_size": PT3_grid_size,  # Grid size for voxelization
+            }
+
+            pcd_features = self.backbone(data_dict)['feat'].view(B, N, -1)
+            pcd_features = self.encoder_pcd_feat_pool(pcd_features.transpose(1, 2)).transpose(1, 2)
+            pcd_features = self.encoder_pcd_input_proj(pcd_features)
+            pcd_features = pcd_features.transpose(0, 1) # [B, T, C] -> [T, B, C], T refers to number of tokens
+
+            # pcd_features = self.backbone(batch["observation.pcd"])
+            # pcd_features = self.encoder_pcd_feat_input_proj(pcd_features)
+            encoder_in_tokens.extend(pcd_features)
+            # import ipdb ; ipdb.set_trace()
+            encoder_in_pos_embed.extend(self.encoder_pcd_feat_pos_embed.weight.unsqueeze(1))
 
         # Stack all tokens along the sequence dimension.
         encoder_in_tokens = torch.stack(encoder_in_tokens, axis=0)
