@@ -230,6 +230,9 @@ class LeRobotDataset(torch.utils.data.Dataset):
                 num_obstacle_points=4096,
             )[0] # first dim is batch_size (= 1), here we don't need this dim
             item["observation.pcd"] = torch.from_numpy(full_pcd)
+
+        if self.cfg.get("use_absolute_actions", False):
+            item["action"] = torch.cumsum(item['action'], dim=0) + item['observation.state'][:7]
         return item
 
     def __repr__(self):
