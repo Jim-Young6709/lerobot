@@ -302,17 +302,9 @@ class ACT(nn.Module):
             self.vae_encoder_cls_embed = nn.Embedding(1, config.dim_model)
             # Projection layer for joint-space configuration to hidden dimension.
             if self.use_robot_state:
-                # self.vae_encoder_robot_state_input_proj = nn.Linear(
-                #     config.input_shapes["observation.state"][0], config.dim_model
-                # )
-                # TODO: Done
-                self.vae_encoder_robot_current_state_input_proj = nn.Linear(
-                    int(config.input_shapes["observation.state"][0] / 2), config.dim_model
+                self.vae_encoder_robot_state_input_proj = nn.Linear(
+                    config.input_shapes["observation.state"][0], config.dim_model
                 )
-                self.vae_encoder_robot_goal_state_input_proj = nn.Linear(
-                    int(config.input_shapes["observation.state"][0] / 2), config.dim_model
-                )
-
             # Projection layer for action (joint-space target) to hidden dimension.
             self.vae_encoder_action_input_proj = nn.Linear(
                 config.output_shapes["action"][0], config.dim_model
@@ -323,9 +315,7 @@ class ACT(nn.Module):
             # dimension.
             num_input_token_encoder = 1 + config.chunk_size
             if self.use_robot_state:
-                # num_input_token_encoder += 1
-                # TODO: Done
-                num_input_token_encoder += 2
+                num_input_token_encoder += 1
             self.register_buffer(
                 "vae_encoder_pos_enc",
                 create_sinusoidal_pos_embedding(num_input_token_encoder, config.dim_model).unsqueeze(0),
@@ -354,17 +344,9 @@ class ACT(nn.Module):
         # Transformer encoder input projections. The tokens will be structured like
         # [latent, (robot_state), (env_state), (image_feature_map_pixels)].
         if self.use_robot_state:
-            # self.encoder_robot_state_input_proj = nn.Linear(
-            #     config.input_shapes["observation.state"][0], config.dim_model
-            # )
-            # TODO: Done
-            self.encoder_robot_current_state_input_proj = nn.Linear(
-                int(config.input_shapes["observation.state"][0] / 2), config.dim_model
+            self.encoder_robot_state_input_proj = nn.Linear(
+                config.input_shapes["observation.state"][0], config.dim_model
             )
-            self.encoder_robot_goal_state_input_proj = nn.Linear(
-                int(config.input_shapes["observation.state"][0] / 2), config.dim_model
-            )
-
         if self.use_env_state:
             self.encoder_env_state_input_proj = nn.Linear(
                 config.input_shapes["observation.environment_state"][0], config.dim_model
@@ -381,9 +363,7 @@ class ACT(nn.Module):
         # Transformer encoder positional embeddings.
         n_1d_tokens = 1  # for the latent
         if self.use_robot_state:
-            # n_1d_tokens += 1
-            # TODO: Done
-            n_1d_tokens += 2
+            n_1d_tokens += 1
         if self.use_env_state:
             n_1d_tokens += 1
         self.encoder_1d_feature_pos_embed = nn.Embedding(n_1d_tokens, config.dim_model)
@@ -444,19 +424,12 @@ class ACT(nn.Module):
                 self.vae_encoder_cls_embed.weight, "1 d -> b 1 d", b=batch_size
             )  # (B, 1, D)
             if self.use_robot_state:
-                # robot_state_embed = self.vae_encoder_robot_state_input_proj(batch["observation.state"])
-                # robot_state_embed = robot_state_embed.unsqueeze(1)  # (B, 1, D)
-                # TODO: Done
-                robot_current_state_embed = self.vae_encoder_robot_current_state_input_proj(batch["observation.state"][:, :7])
-                robot_current_state_embed = robot_current_state_embed.unsqueeze(1)  # (B, 1, D)
-                robot_goal_state_embed = self.vae_encoder_robot_goal_state_input_proj(batch["observation.state"][:, 7:])
-                robot_goal_state_embed = robot_goal_state_embed.unsqueeze(1)  # (B, 1, D)
+                robot_state_embed = self.vae_encoder_robot_state_input_proj(batch["observation.state"])
+                robot_state_embed = robot_state_embed.unsqueeze(1)  # (B, 1, D)
             action_embed = self.vae_encoder_action_input_proj(batch["action"])  # (B, S, D)
 
             if self.use_robot_state:
-                # vae_encoder_input = [cls_embed, robot_state_embed, action_embed]  # (B, S+2, D)
-                # TODO: Done
-                vae_encoder_input = [cls_embed, robot_current_state_embed, robot_goal_state_embed, action_embed] # (B, S+3, D)
+                vae_encoder_input = [cls_embed, robot_state_embed, action_embed]  # (B, S+2, D)
             else:
                 vae_encoder_input = [cls_embed, action_embed]
             vae_encoder_input = torch.cat(vae_encoder_input, axis=1)
@@ -468,9 +441,8 @@ class ACT(nn.Module):
             # Prepare key padding mask for the transformer encoder. We have 1 or 2 extra tokens at the start of the
             # sequence depending whether we use the input states or not (cls and robot state)
             # False means not a padding token.
-            # TODO: I guess it should be 3 here? but not sure, check this
             cls_joint_is_pad = torch.full(
-                (batch_size, 3 if self.use_robot_state else 1),
+                (batch_size, 2 if self.use_robot_state else 1),
                 False,
                 device=batch["observation.state"].device,
             )
@@ -504,10 +476,7 @@ class ACT(nn.Module):
         encoder_in_pos_embed = list(self.encoder_1d_feature_pos_embed.weight.unsqueeze(1))
         # Robot state token.
         if self.use_robot_state:
-            # encoder_in_tokens.append(self.encoder_robot_state_input_proj(batch["observation.state"]))
-            # TODO: Done
-            encoder_in_tokens.append(self.vae_encoder_robot_current_state_input_proj(batch["observation.state"][:, :7]))
-            encoder_in_tokens.append(self.vae_encoder_robot_goal_state_input_proj(batch["observation.state"][:, 7:]))
+            encoder_in_tokens.append(self.encoder_robot_state_input_proj(batch["observation.state"]))
         # Environment state token.
         if self.use_env_state:
             encoder_in_tokens.append(
